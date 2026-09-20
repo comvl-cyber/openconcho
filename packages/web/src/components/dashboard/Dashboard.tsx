@@ -2,6 +2,8 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { Boxes, LayoutDashboard, Network, Settings as SettingsIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Sparkline } from "@/components/charts/Sparkline";
+import { MemoryPipeline } from "@/components/explainers/MemoryPipeline";
 import {
 	computeFleetAggregates,
 	DEFAULT_ROW_METRICS,
@@ -78,6 +80,11 @@ export function Dashboard() {
 					icon={Boxes}
 					title="No servers configured"
 					description="Add at least one Honcho server in Settings to see your workspaces."
+					guidance={[
+						"Open Settings and enter the URL of your Honcho instance.",
+						"Add an auth token if your server requires one.",
+						"Your workspaces, peers, and memory will appear here automatically.",
+					]}
 					action={
 						<Link
 							to="/settings"
@@ -121,11 +128,15 @@ export function Dashboard() {
 				<Body className="leading-none">Workspaces across every configured server</Body>
 			</motion.div>
 
+			<div className="mb-4">
+				<MemoryPipeline emphasize="dialectic" />
+			</div>
+
 			<motion.div
 				initial={{ opacity: 0, y: 8 }}
 				animate={{ opacity: 1, y: 0 }}
 				transition={{ delay: 0.05 }}
-				className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4"
+				className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4"
 			>
 				<MetricCard label="Workspaces" value={agg.totalWorkspaces} />
 				<MetricCard label="Conclusions" value={agg.totalConclusions} accent />
@@ -139,6 +150,14 @@ export function Dashboard() {
 					label="Unreachable"
 					value={agg.unreachableCount}
 					color={agg.unreachableCount > 0 ? COLOR.destructive : "var(--text-3)"}
+				/>
+				<MetricCard
+					label="Queue work"
+					value={agg.totalQueueActive}
+					secondary={agg.totalQueuePending}
+					color={agg.totalQueueActive > 0 ? "var(--accent-text)" : "var(--text-3)"}
+					spark={[agg.totalQueueActive, agg.totalQueuePending, agg.totalConclusions]}
+					sparkLabel="Active / pending queue work vs conclusions"
 				/>
 			</motion.div>
 
@@ -219,14 +238,29 @@ interface MetricCardProps {
 	label: string;
 	value: number;
 	total?: number;
+	secondary?: number;
 	color?: string;
 	accent?: boolean;
+	spark?: number[];
+	sparkLabel?: string;
 }
 
-function MetricCard({ label, value, total, color, accent }: MetricCardProps) {
+function MetricCard({
+	label,
+	value,
+	total,
+	secondary,
+	color,
+	accent,
+	spark,
+	sparkLabel,
+}: MetricCardProps) {
 	const valueColor = color ?? (accent ? COLOR.accentText : "var(--text-1)");
 	return (
-		<div className="rounded-xl p-4 theme-card">
+		<div
+			className="rounded-xl p-4 theme-card transition-shadow"
+			style={{ boxShadow: accent ? "0 0 24px var(--glow)" : undefined }}
+		>
 			<div className="text-2xl font-semibold font-mono" style={{ color: valueColor }}>
 				{formatCount(value)}
 				{total !== undefined && (
@@ -234,10 +268,20 @@ function MetricCard({ label, value, total, color, accent }: MetricCardProps) {
 						/ {formatCount(total)}
 					</span>
 				)}
+				{secondary !== undefined && (
+					<span className="text-base ml-1" style={{ color: "var(--text-4)" }}>
+						+ {formatCount(secondary)}
+					</span>
+				)}
 			</div>
 			<div className="text-xs mt-0.5" style={{ color: "var(--text-3)" }}>
 				{label}
 			</div>
+			{spark && sparkLabel && spark.length > 1 && (
+				<div className="mt-2">
+					<Sparkline points={spark} label={sparkLabel} height={20} color={valueColor} />
+				</div>
+			)}
 		</div>
 	);
 }

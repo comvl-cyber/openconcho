@@ -7,10 +7,12 @@ interface EmptyStateProps {
 	icon?: LucideIcon;
 	title: string;
 	description?: string;
+	/** Short numbered steps telling the user what to do next. */
+	guidance?: string[];
 	action?: React.ReactNode;
 }
 
-export function EmptyState({ icon: Icon, title, description, action }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, title, description, guidance, action }: EmptyStateProps) {
 	return (
 		<motion.div
 			initial={{ opacity: 0, y: 8 }}
@@ -31,6 +33,21 @@ export function EmptyState({ icon: Icon, title, description, action }: EmptyStat
 			)}
 			<Body className="font-medium">{title}</Body>
 			{description && <Caption className="mt-1.5 max-w-xs leading-relaxed">{description}</Caption>}
+			{guidance && guidance.length > 0 && (
+				<ol className="mt-3 max-w-xs text-left space-y-1.5">
+					{guidance.map((step, i) => (
+						<li key={step} className="flex gap-2 items-start">
+							<span
+								className="flex-shrink-0 w-4 h-4 mt-0.5 rounded-full flex items-center justify-center text-[10px] font-mono"
+								style={{ background: COLOR.accentSubtle, color: COLOR.accentText }}
+							>
+								{i + 1}
+							</span>
+							<Caption className="leading-relaxed">{step}</Caption>
+						</li>
+					))}
+				</ol>
+			)}
 			{action && <div className="mt-4">{action}</div>}
 		</motion.div>
 	);

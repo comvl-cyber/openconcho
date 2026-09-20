@@ -2,6 +2,7 @@ import { createFileRoute, useParams } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { Activity } from "lucide-react";
 import { useQueueStatus } from "@/api/queries";
+import { MemoryPipeline } from "@/components/explainers/MemoryPipeline";
 import { Breadcrumb } from "@/components/layout/Breadcrumb";
 import { Body, PageTitle } from "@/components/ui/typography";
 import { DreamProgressPanel } from "@/components/workspaces/DreamProgressPanel";
@@ -38,6 +39,10 @@ function WorkspaceQueuePage() {
 					isLoading={isLoading}
 					error={error instanceof Error ? error : null}
 				/>
+			</div>
+
+			<div className="mt-6">
+				<MemoryPipeline emphasize="dreams" />
 			</div>
 		</div>
 	);

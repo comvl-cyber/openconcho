@@ -10,6 +10,10 @@ import {
 	useQueryConclusions,
 } from "@/api/queries";
 import type { components } from "@/api/schema.d.ts";
+import { LevelBarChart } from "@/components/charts/LevelBarChart";
+import { PairFlowChart } from "@/components/charts/PairFlowChart";
+import { LevelBadge } from "@/components/explainers/LevelBadge";
+import { MemoryPipeline } from "@/components/explainers/MemoryPipeline";
 import { Breadcrumb } from "@/components/layout/Breadcrumb";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -24,7 +28,9 @@ import { Input, Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Body, Caption, MonoCaption, Muted, PageTitle } from "@/components/ui/typography";
 import { useDemo } from "@/hooks/useDemo";
+import { levelDistribution, observerObservedFlow } from "@/lib/charts";
 import { COLOR } from "@/lib/constants";
+import { type ExtendedConclusion, inferConclusionType } from "@/lib/dreams";
 
 type Conclusion = components["schemas"]["Conclusion"];
 
@@ -94,6 +100,16 @@ export function ConclusionBrowser() {
 			: []
 		: sortedConclusions;
 
+	// Charts operate on what is currently displayed (search-aware), not raw pages.
+	const chartDistribution = useMemo(
+		() => levelDistribution(displayedConclusions as ExtendedConclusion[]),
+		[displayedConclusions],
+	);
+	const chartFlows = useMemo(
+		() => observerObservedFlow(displayedConclusions as ExtendedConclusion[]),
+		[displayedConclusions],
+	);
+
 	function handleSort(field: string, dir: SortDir) {
 		setSortField(field);
 		setSortDir(dir);
@@ -142,6 +158,30 @@ export function ConclusionBrowser() {
 				</div>
 				<Muted className="mt-0.5">Distilled memory observations about peers</Muted>
 			</motion.div>
+
+			<div className="mb-6">
+				<MemoryPipeline emphasize="conclusions" />
+			</div>
+
+			{displayedConclusions.length > 0 && (
+				<div
+					className="rounded-xl p-4 mb-6 grid grid-cols-1 md:grid-cols-2 gap-6"
+					style={{
+						background: "var(--surface)",
+						border: "1px solid var(--border)",
+						backdropFilter: "blur(6px)",
+					}}
+				>
+					<div>
+						<Caption className="mb-2">Conclusions by reasoning level</Caption>
+						<LevelBarChart distribution={chartDistribution} />
+					</div>
+					<div>
+						<Caption className="mb-2">Observer → observed flow</Caption>
+						<PairFlowChart flows={chartFlows} />
+					</div>
+				</div>
+			)}
 
 			{/* Search */}
 			<form onSubmit={handleSearch} className="flex gap-2 mb-6">
@@ -195,7 +235,16 @@ export function ConclusionBrowser() {
 					description={
 						activeSearch
 							? `No conclusions match "${activeSearch}"`
-							: "Conclusions are created when Honcho processes sessions."
+							: "Conclusions are facts Honcho has distilled from your peers' conversations."
+					}
+					guidance={
+						activeSearch
+							? undefined
+							: [
+									"Connect a Honcho server and add peers in Settings.",
+									"Chat with a peer in a session — Honcho derives conclusions automatically.",
+									"Create one manually with the New conclusion button above.",
+								]
 					}
 				/>
 			)}
@@ -247,6 +296,12 @@ export function ConclusionBrowser() {
 										<Eye className="w-3 h-3" style={{ color: "var(--text-4)" }} strokeWidth={1.5} />
 										<MonoCaption>{mask(c.observer_id)}</MonoCaption>
 									</div>
+									{(() => {
+										const level = inferConclusionType(c as ExtendedConclusion);
+										return level !== "explicit" && level !== "contradiction" ? (
+											<LevelBadge level={level} />
+										) : null;
+									})()}
 									{c.observed_id && (
 										<div className="flex items-center gap-1">
 											<Caption>→</Caption>

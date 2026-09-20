@@ -3,6 +3,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronRight, Eye, Moon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useDreams } from "@/api/queries";
+import { HourHistogram } from "@/components/charts/HourHistogram";
+import { Sparkline } from "@/components/charts/Sparkline";
+import { MemoryPipeline } from "@/components/explainers/MemoryPipeline";
 import { Breadcrumb } from "@/components/layout/Breadcrumb";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
@@ -10,6 +13,7 @@ import { Skeleton } from "@/components/shared/Skeleton";
 import { TimestampChip } from "@/components/shared/TimestampChip";
 import { Caption, MonoCaption, Muted, PageTitle } from "@/components/ui/typography";
 import { useDemo } from "@/hooks/useDemo";
+import { dreamHourHistogram, sparklineFromDreams } from "@/lib/charts";
 import { COLOR } from "@/lib/constants";
 import {
 	clusterConclusionsIntoDreams,
@@ -43,6 +47,19 @@ export function DreamList() {
 		[dreams, selectedId],
 	);
 
+	const allConclusions = useMemo<ExtendedConclusion[]>(
+		() => (data as ExtendedConclusion[] | undefined) ?? [],
+		[data],
+	);
+	const hourBins = useMemo(() => dreamHourHistogram(allConclusions), [allConclusions]);
+	const sparkPoints = useMemo(() => {
+		if (dreams.length === 0) return [];
+		const times = dreams.flatMap((d) => [d.earliestMs, d.latestMs]);
+		const startMs = Math.min(...times);
+		const endMs = Math.max(...times) + 1;
+		return sparklineFromDreams(dreams, 28, startMs, endMs);
+	}, [dreams]);
+
 	return (
 		<div className="page-container">
 			<motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
@@ -70,13 +87,57 @@ export function DreamList() {
 
 			<ErrorAlert error={error instanceof Error ? error : null} />
 
+			<div className="mb-6">
+				<MemoryPipeline emphasize="dreams" />
+			</div>
+
+			{dreams.length > 0 && (
+				<motion.div
+					initial={{ opacity: 0, y: 8 }}
+					animate={{ opacity: 1, y: 0 }}
+					transition={{ delay: 0.05 }}
+					className="rounded-xl p-4 mb-6"
+					style={{
+						background: "var(--surface)",
+						border: "1px solid var(--border)",
+						backdropFilter: "blur(6px)",
+					}}
+				>
+					<div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-end">
+						<div>
+							<Caption className="mb-2">Dream activity by hour of day</Caption>
+							<HourHistogram bins={hourBins} label="Dream activity by hour of day" />
+						</div>
+						<div>
+							<Caption className="mb-2">Dreams over time</Caption>
+							<Sparkline points={sparkPoints} label="Dreams over time" height={40} />
+							<div
+								className="flex justify-between mt-1 text-[10px] font-mono"
+								style={{ color: "var(--text-4)" }}
+							>
+								<span>oldest</span>
+								<span>
+									{dreams.length} dream{dreams.length === 1 ? "" : "s"}
+								</span>
+								<span>newest</span>
+							</div>
+						</div>
+					</div>
+				</motion.div>
+			)}
+
 			{isLoading && <DreamsSkeleton />}
 
 			{!isLoading && dreams.length === 0 && !error && (
 				<EmptyState
 					icon={Moon}
 					title="No dream runs yet"
-					description="Trigger a dream from a workspace to see its conclusion stream here."
+					description="Dreams are background consolidation runs that clean up and generalize conclusions."
+					guidance={[
+						"Chat with a peer or add conclusions so there is material to consolidate.",
+						"Trigger a dream from the workspace detail or queue page.",
+						"Return here to watch each run's explicit, deductive, and inductive output.",
+					]}
 				/>
 			)}
 

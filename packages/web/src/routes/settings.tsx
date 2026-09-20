@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { InstancesManager } from "@/components/settings/InstancesManager";
+import { ModelManager } from "@/components/settings/ModelManager";
 import { useInstances } from "@/hooks/useInstances";
 
 export const Route = createFileRoute("/settings")({
@@ -21,7 +22,7 @@ function SettingsPage() {
 				initial={{ opacity: 0, y: 16 }}
 				animate={{ opacity: 1, y: 0 }}
 				transition={{ type: "spring", stiffness: 260, damping: 24 }}
-				className="w-full max-w-md"
+				className="w-full max-w-4xl"
 			>
 				<div className="mb-8 text-center">
 					<img
@@ -40,6 +41,7 @@ function SettingsPage() {
 					</p>
 				</div>
 				<InstancesManager onActivated={() => navigate({ to: "/" as never })} />
+				<ModelManager />
 				<p className="text-xs text-center mt-4" style={{ color: "var(--text-4)" }}>
 					Connection details are stored locally on this device only
 				</p>

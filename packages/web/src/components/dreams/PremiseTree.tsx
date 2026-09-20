@@ -1,7 +1,9 @@
+import { AnimatePresence, motion } from "framer-motion";
 import { ChevronRight, CornerDownRight, RefreshCcw } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Caption, MonoCaption, Muted } from "@/components/ui/typography";
 import { useDemo } from "@/hooks/useDemo";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { COLOR } from "@/lib/constants";
 import { type ConclusionType, inferConclusionType, type PremiseNode } from "@/lib/dreams";
 
@@ -51,21 +53,64 @@ interface PremiseTreeProps {
 	root: PremiseNode;
 }
 
+/** Plain-language connective shown between a conclusion and its premises. */
+const CONNECTIVE_BY_TYPE: Record<ConclusionType, string> = {
+	explicit: "observed directly",
+	deductive: "follows from",
+	inductive: "generalized from",
+	contradiction: "conflicts with",
+};
+
+function countByLevel(node: PremiseNode): Record<ConclusionType, number> {
+	const counts: Record<ConclusionType, number> = {
+		explicit: 0,
+		deductive: 0,
+		inductive: 0,
+		contradiction: 0,
+	};
+	const visit = (n: PremiseNode) => {
+		if (n.conclusion) counts[inferConclusionType(n.conclusion)]++;
+		for (const child of n.children) visit(child);
+	};
+	for (const child of node.children) visit(child);
+	return counts;
+}
+
 export function PremiseTree({ root }: PremiseTreeProps) {
+	const levelCounts = useMemo(() => countByLevel(root), [root]);
 	if (root.children.length === 0) {
 		return <Muted className="italic">No upstream premises recorded for this conclusion.</Muted>;
 	}
 	return (
-		<ul className="space-y-1.5" aria-label="Premise tree">
-			{root.children.map((child, i) => (
-				<PremiseTreeNode key={`${child.conclusionId}-${i}`} node={child} />
-			))}
-		</ul>
+		<div>
+			<div className="flex items-center gap-1.5 flex-wrap mb-2">
+				{(["explicit", "deductive", "inductive", "contradiction"] as const).map((level) => (
+					<span
+						key={level}
+						className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+						style={{
+							background: levelCounts[level] > 0 ? "var(--surface)" : "transparent",
+							color: levelCounts[level] > 0 ? "var(--text-2)" : "var(--text-4)",
+							border: `1px solid ${levelCounts[level] > 0 ? "var(--border)" : "var(--border)"}`,
+							opacity: levelCounts[level] > 0 ? 1 : 0.5,
+						}}
+					>
+						{levelCounts[level]} {level}
+					</span>
+				))}
+			</div>
+			<ul className="space-y-1.5" aria-label="Premise tree">
+				{root.children.map((child, i) => (
+					<PremiseTreeNode key={`${child.conclusionId}-${i}`} node={child} />
+				))}
+			</ul>
+		</div>
 	);
 }
 
 function PremiseTreeNode({ node }: { node: PremiseNode }) {
 	const { mask } = useDemo();
+	const reduced = useReducedMotion();
 	const [expanded, setExpanded] = useState(false);
 	const hasChildren = node.children.length > 0;
 	const conclusion = node.conclusion;
@@ -134,16 +179,30 @@ function PremiseTreeNode({ node }: { node: PremiseNode }) {
 								Premise not in current page — fetch more conclusions to expand.
 							</Caption>
 						)}
+						{hasChildren && (
+							<Caption className="mt-1.5 block text-[10px]" style={{ color: "var(--text-4)" }}>
+								{type ? CONNECTIVE_BY_TYPE[type] : "built from"} {node.children.length} premise
+								{node.children.length === 1 ? "" : "s"} below
+							</Caption>
+						)}
 					</div>
 				</div>
 			</div>
-			{expanded && hasChildren && (
-				<ul className="mt-1.5 space-y-1.5">
-					{node.children.map((child, i) => (
-						<PremiseTreeNode key={`${child.conclusionId}-${i}`} node={child} />
-					))}
-				</ul>
-			)}
+			<AnimatePresence initial={false}>
+				{expanded && hasChildren && (
+					<motion.ul
+						initial={reduced ? false : { opacity: 0, height: 0 }}
+						animate={{ opacity: 1, height: "auto" }}
+						exit={reduced ? { opacity: 0 } : { opacity: 0, height: 0 }}
+						transition={{ duration: 0.2, ease: "easeInOut" }}
+						className="mt-1.5 space-y-1.5 overflow-hidden"
+					>
+						{node.children.map((child, i) => (
+							<PremiseTreeNode key={`${child.conclusionId}-${i}`} node={child} />
+						))}
+					</motion.ul>
+				)}
+			</AnimatePresence>
 		</li>
 	);
 }

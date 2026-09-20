@@ -1,0 +1,20 @@
+# Admin service image - Python with admin server
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps
+RUN pip install --no-cache-dir pyyaml passlib[bcrypt] requests
+
+# Copy admin server and Git credential helper
+COPY admin/server.py /app/admin/server.py
+COPY admin/git-askpass.sh /app/admin/git-askpass.sh
+RUN chmod 0555 /app/admin/git-askpass.sh
+
+# Default command
+CMD ["python3", "/app/admin/server.py"]

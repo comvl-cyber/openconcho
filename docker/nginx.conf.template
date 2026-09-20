@@ -16,6 +16,19 @@ server {
     # is rendered by the entrypoint into conf.d from the container's own DNS, so it
     # works on both user-defined networks (127.0.0.11) and the default bridge.
 
+    # Private Honcho model administration API. The outer UI ingress performs
+    # Basic Auth and preserves the Authorization header for the admin service.
+    location ^~ /admin-api/ {
+        proxy_pass http://honcho-model-admin.honcho.svc.cluster.local:8091;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 360s;
+        proxy_send_timeout 360s;
+    }
+
     # Header-driven same-origin proxy: the browser names the Honcho upstream per
     # request via X-Honcho-Upstream, so the browser never makes a cross-origin call.
     # $allow_upstream is provided by the allowlist map in conf.d (entrypoint-rendered).

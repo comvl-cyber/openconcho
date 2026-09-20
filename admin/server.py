@@ -128,6 +128,12 @@ def request_json(method, url, **kwargs):
 def provider_request(provider, path, payload=None):
     profile = PROVIDERS[provider]
     key = os.environ.get(profile['key_env'])
+    key_file = os.environ.get(profile.get('key_file_env', profile['key_env'] + '_FILE'))
+    if key_file:
+        try:
+            key = Path(key_file).read_text().strip()
+        except OSError:
+            key = None
     if not key:
         raise ValueError('Provider credential is not configured on the server')
     return request_json('POST' if payload else 'GET', profile['url'] + path,

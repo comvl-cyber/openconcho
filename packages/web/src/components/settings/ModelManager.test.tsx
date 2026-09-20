@@ -18,7 +18,7 @@ it("disables apply until the selected model has passed a compatibility test", as
 									id: "test/model",
 									name: "Test model",
 									input: "0.2",
-									output: null,
+									output: "0.4",
 									cache: null,
 									parameters: [],
 								},

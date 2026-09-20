@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ModelManager } from "./ModelManager";
 
 afterEach(() => vi.unstubAllGlobals());
 
-it("disables apply until the selected model has passed a compatibility test", async () => {
+it("does not expose a model apply control", async () => {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: string) => {
@@ -50,8 +50,9 @@ it("disables apply until the selected model has passed a compatibility test", as
 			<ModelManager />
 		</QueryClientProvider>,
 	);
-	fireEvent.click(await screen.findByRole("button", { name: "Select test/model" }));
-	expect(screen.getByRole("button", { name: "Apply model via GitOps" })).toBeDisabled();
+	await screen.findByText("Honcho models");
+	expect(screen.queryByRole("button", { name: "Apply model via GitOps" })).not.toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Prepare rollback" })).not.toBeInTheDocument();
 });
 
 it("explains authentication failures without exposing a credential form", async () => {

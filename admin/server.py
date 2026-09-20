@@ -37,27 +37,6 @@ def authorize(headers, users):
     return False
 
 
-def edit_config(source, model, provider):
-    validate_selection({'provider': provider, 'model': model})
-    for slot in SLOTS:
-        for suffix, value in [('MODEL', model), ('OVERRIDES__BASE_URL', PROVIDERS[provider]['url'])]:
-            source, count = re.subn(r'^  ' + re.escape(slot + '__' + suffix) + r': .*$',
-                                    f'  {slot}__{suffix}: {json.dumps(value)}', source, flags=re.M)
-            if count != 1:
-                raise ValueError('Expected exactly nine configured chat slots')
-        key = slot + '__STRUCTURED_OUTPUT_MODE'
-        if re.search(r'^  ' + key + ':', source, flags=re.M):
-            source = re.sub(r'^  ' + key + ': .*$', f'  {key}: "json_object"', source, flags=re.M)
-        else:
-            source += f'  {key}: "json_object"\n'
-        key = slot + '__OVERRIDES__API_KEY_ENV'
-        if re.search(r'^  ' + key + ':', source, flags=re.M):
-            source = re.sub(r'^  ' + key + ': .*$', f'  {key}: HONCHO_CHAT_API_KEY', source, flags=re.M)
-        else:
-            source += f'  {key}: HONCHO_CHAT_API_KEY\n'
-    return source
-
-
 def price_per_million(value):
     from decimal import Decimal, InvalidOperation
     try:
@@ -78,21 +57,7 @@ def check_csrf(headers, token, origin):
             hmac.compare_digest(headers.get('X-CSRF-Token', ''), token))
 
 
-def require_proof(proofs, token, provider, model, revision):
-    import time
-    if not isinstance(token, str) or len(token) > 100:
-        raise ValueError('Invalid test proof')
-    proof = proofs.get(token, {})
-    if not (proof.get('passed') and proof.get('provider') == provider and
-            proof.get('model') == model and proof.get('revision') == revision and
-            proof.get('expires', 0) > time.time()):
-        raise ValueError('Run a successful compatibility test against the current Git revision first')
-    return proof
-
-
-import hashlib
 import secrets
-import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -102,7 +67,6 @@ from urllib.parse import urlsplit, parse_qs, urljoin
 import requests
 import yaml
 
-CONFIG_PATH = 'infrastructure/honcho/config.yaml'
 ANNOTATION = 'openconcho.io/model-change'
 MAX_RESPONSE = 8 * 1024 * 1024
 
@@ -153,34 +117,16 @@ class Controller:
     def __init__(self):
         self.lock = threading.Lock()
         self.csrf = secrets.token_urlsafe(32)
-        self.proofs = {}
         self.catalogs = {}
-        self.repo = Path(os.environ.get('GIT_WORKDIR', '/tmp/gitops'))
-
-    def git(self, *args):
-        env = dict(os.environ, GIT_ASKPASS='/bin/true',
-                   GIT_CONFIG_COUNT='1',
-                   GIT_CONFIG_KEY_0='credential.helper',
-                   GIT_CONFIG_VALUE_0='!f() { echo username=git; echo password=$(cat /run/git-token/token); }; f')
-        result = subprocess.run(['git', '-C', str(self.repo), *args], capture_output=True,
-                                timeout=30, check=False, env=env)
-        if result.returncode:
-            raise ValueError('Git operation failed; check deploy-key access or concurrent remote changes') from None
-        return result.stdout.decode().strip()
 
     def snapshot(self):
-        if not (self.repo / '.git').exists():
-            self.repo.mkdir(parents=True, exist_ok=True)
-            self.git('init')
-            remote = os.environ.get('GIT_REMOTE')
-            if not remote or not re.match(r'^(https?://|git@)', remote):
-                raise ValueError('GIT_REMOTE must be a valid HTTPS or SSH git URL')
-            self.git('remote', 'add', 'origin', remote)
-            self.git('config', 'user.name', 'OpenConcho Model Admin')
-            self.git('config', 'user.email', 'openconcho-model-admin@users.noreply.github.com')
-        self.git('fetch', '--depth=2', 'origin', 'main')
-        self.git('checkout', '-B', 'main', 'FETCH_HEAD')
-        return self.git('rev-parse', 'HEAD'), (self.repo / CONFIG_PATH).read_text()
+        config = self.kube('/api/v1/namespaces/honcho/configmaps/honcho-config')
+        data = config.get('data')
+        if not isinstance(data, dict):
+            raise ValueError('Live Honcho configuration is unavailable')
+        metadata = config.get('metadata') or {}
+        revision = metadata.get('resourceVersion') or metadata.get('uid') or 'live'
+        return revision, yaml.safe_dump(config, sort_keys=False)
 
     def catalog(self, provider):
         if provider not in PROVIDERS:
@@ -270,80 +216,8 @@ class Controller:
             if structured and not passed:
                 break
         passed = len(results) == len(cases) and all(row['passed'] for row in results)
-        token = secrets.token_urlsafe(32)
-        self.proofs = {k:v for k,v in self.proofs.items() if v['expires'] > time.time()}
-        self.proofs[token] = {'provider': provider, 'model': model, 'revision': revision,
-                              'expires': time.time()+600, 'passed': passed}
-        return {'proof': token, 'revision': revision, 'passed': passed, 'results': results,
-                'policy': 'Apply sets all nine chat slots to tested json_object; reasoning, temperature and budgets are retained. Embeddings unchanged.'}
-
-    def write(self, source, provider, model, revision):
-        # Cross-process lock: single-writer via git branch + atomic push (force-with-lease)
-        # This avoids fcntl which only locks within a single process.
-        self.git('checkout', '-B', 'model-update', 'FETCH_HEAD')
-        self.git('push', '--force-with-lease', 'origin', 'HEAD:refs/heads/model-update')
-        # Re-fetch to get the remote state after our force-with-lease push
-        self.git('fetch', '--depth=1', 'origin', 'main')
-        # Merge our branch into main locally
-        self.git('merge', '--ff-only', 'model-update')
-
-        old = yaml.safe_load(source)
-        current_model = old['data'][SLOTS[0]+'__MODEL']
-        current_url = old['data'][SLOTS[0]+'__OVERRIDES__BASE_URL']
-        previous_provider = next((p for p,v in PROVIDERS.items() if v['url'] == current_url), None)
-        if previous_provider is None or any(old['data'][s+'__MODEL'] != current_model for s in SLOTS):
-            raise ValueError('Nonuniform current configuration requires operator review')
-        updated = edit_config(source, model, provider)
-        # Store rollback MODEL identity in Git (never keys); rollback is re-tested.
-        doc = yaml.safe_load(updated)
-        annotations = doc['metadata'].setdefault('annotations', {})
-        annotations['openconcho.io/previous-model'] = current_model
-        annotations['openconcho.io/previous-provider'] = previous_provider
-        marker = secrets.token_hex(12)
-        annotations[ANNOTATION] = marker
-        # Keep existing data lines byte-preserved, changing only metadata and selected chat settings.
-        updated = yaml.safe_dump(doc, sort_keys=False)
-        (self.repo / CONFIG_PATH).write_text(updated)
-        profile = PROVIDERS[provider]
-        for filename in ['api.yaml', 'deriver.yaml']:
-            path = self.repo / 'infrastructure/honcho' / filename
-            docs = list(yaml.safe_load_all(path.read_text()))
-            for deployment in docs:
-                if deployment['kind'] != 'Deployment':
-                    continue
-                template = deployment['spec']['template']
-                template['metadata'].setdefault('annotations', {})[ANNOTATION] = marker
-                env = template['spec']['containers'][0].setdefault('env', [])
-                for name in ['HONCHO_CHAT_API_KEY']:
-                    env[:] = [item for item in env if item['name'] != name]
-                    secret_name = profile.get('secret', 'honcho-openrouter')
-                    secret_key = profile.get('secret_key', 'OPENROUTER_API_KEY')
-                    env.append({'name': name, 'valueFrom': {'secretKeyRef': {
-                        'name': secret_name, 'key': secret_key}}})
-            path.write_text(yaml.safe_dump_all(docs, sort_keys=False))
-        # Atomic push with force-with-lease ensures no lost updates
-        self.git('add', CONFIG_PATH, 'infrastructure/honcho/api.yaml', 'infrastructure/honcho/deriver.yaml')
-        self.git('commit', '-m', f'feat(honcho): select {provider} model {model}')
-        commit = self.git('rev-parse', 'HEAD')
-        self.git('push', '--force-with-lease', 'origin', 'HEAD:refs/heads/main')
-        remote = self.git('ls-remote', 'origin', 'refs/heads/main').split()[0]
-        if remote != commit:
-            raise ValueError('Remote advanced after push; refresh status before proceeding')
-        return {'commit': commit, 'model': model, 'provider': provider, 'state': 'Awaiting Flux reconciliation'}
-
-    def apply(self, body):
-        provider, model = validate_selection(body)
-        revision, source = self.snapshot()
-        if body.get('revision') != revision or body.get('confirm') != model:
-            raise ValueError('Confirmation or Git revision changed; refresh and re-test')
-        require_proof(self.proofs, body.get('proof'), provider, model, revision)
-        if body.get('rollback'):
-            annotations = yaml.safe_load(source)['metadata'].get('annotations', {})
-            if (provider, model) != (annotations.get('openconcho.io/previous-provider'), annotations.get('openconcho.io/previous-model')):
-                raise ValueError('Rollback target changed; refresh')
-        result = self.write(source, provider, model, revision)
-        self.proofs.clear()
-        return result
+        return {'revision': revision, 'passed': passed, 'results': results,
+                'policy': 'Read-only compatibility check. Model changes are operator-controlled; embeddings remain unchanged.'}
 
     def kube(self, path):
         root = Path('/var/run/secrets/kubernetes.io/serviceaccount')
@@ -366,15 +240,12 @@ class Controller:
                      status.get('availableReplicas', 0) == deployment['spec'].get('replicas', 1) and
                      status.get('replicas', 0) == deployment['spec'].get('replicas', 1) and live_marker == marker)
             deployments.append({'name': name, 'ready': ready})
-        live = self.kube('/api/v1/namespaces/honcho/configmaps/honcho-config')['data']
-        synced = all(live.get(s+'__MODEL') == data[s+'__MODEL'] and live.get(s+'__OVERRIDES__BASE_URL') == data[s+'__OVERRIDES__BASE_URL'] for s in SLOTS)
         return {'revision': revision, 'model': data[SLOTS[0]+'__MODEL'],
                 'slots': {s:data[s+'__MODEL'] for s in SLOTS},
                 'provider': next((p for p,v in PROVIDERS.items() if v['url'] == data[SLOTS[0]+'__OVERRIDES__BASE_URL']), 'unknown'),
-                'previous': {'model': annotations.get('openconcho.io/previous-model'), 'provider': annotations.get('openconcho.io/previous-provider')},
-                'deployments': deployments, 'synced': synced,
-                'state': 'Ready' if synced and all(d['ready'] for d in deployments) else 'Awaiting Flux / rollout',
-                'embedding': live.get('EMBEDDING_MODEL_CONFIG__MODEL')}
+                'deployments': deployments, 'synced': True,
+                'state': 'Ready' if all(d['ready'] for d in deployments) else 'Awaiting rollout',
+                'embedding': data.get('EMBEDDING_MODEL_CONFIG__MODEL')}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -426,8 +297,6 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(self.rfile.read(length))
                     if path.path == '/admin-api/test':
                         result = self.controller.test(body)
-                    elif path.path == '/admin-api/apply':
-                        result = self.controller.apply(body)
                     else:
                         return self.respond(404, {'error': 'Not found'})
                 elif path.path == '/admin-api/catalog':
@@ -443,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as error:
             self.respond(400, {'error': str(error) if len(str(error)) < 200 else 'Invalid request'})
         except Exception:
-            self.respond(503, {'error': 'Administration unavailable; check server configuration, Git access or upstream health'})
+            self.respond(503, {'error': 'Administration unavailable; check server configuration or upstream health'})
 
     def do_GET(self):
         self.handle_api()

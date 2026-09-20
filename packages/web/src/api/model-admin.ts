@@ -23,14 +23,12 @@ export interface ModelStatus {
 	revision: string;
 	model: string;
 	provider: string;
-	previous: { model?: string; provider?: string };
 	state: string;
 	slots: Record<string, string>;
 	deployments: { name: string; ready: boolean }[];
 	embedding: string;
 }
 export interface CompatibilityResult {
-	proof: string;
 	revision: string;
 	passed: boolean;
 	policy: string;

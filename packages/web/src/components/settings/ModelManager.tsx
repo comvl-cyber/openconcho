@@ -20,9 +20,7 @@ export function ModelManager() {
 	const [model, setModel] = useState("");
 	const [search, setSearch] = useState("");
 	const [knownOnly, setKnownOnly] = useState(false);
-	const [confirmation, setConfirmation] = useState("");
 	const [test, setTest] = useState<CompatibilityResult>();
-	const [rollback, setRollback] = useState(false);
 	const [busy, setBusy] = useState("");
 	const [message, setMessage] = useState("");
 	const status = useModelStatus(Boolean(session.data) && !busy);
@@ -34,12 +32,10 @@ export function ModelManager() {
 				`${item.id} ${item.name}`.toLowerCase().includes(search.toLowerCase()) &&
 				(!knownOnly || (item.input !== null && item.output !== null)),
 		) ?? [];
-	const select = (id: string, nextProvider = provider, restoring = false) => {
+	const select = (id: string, nextProvider = provider) => {
 		setProvider(nextProvider);
 		setModel(id);
 		setTest(undefined);
-		setConfirmation("");
-		setRollback(restoring);
 		setMessage("");
 	};
 	async function runTest() {
@@ -58,34 +54,7 @@ export function ModelManager() {
 			setBusy("");
 		}
 	}
-	async function apply() {
-		setBusy("Committing desired state to GitOps…");
-		setMessage("");
-		try {
-			const result = await adminRequest<{ commit: string; state: string }>(
-				"apply",
-				session.data?.csrf,
-				{
-					provider,
-					model,
-					proof: test?.proof,
-					revision: test?.revision,
-					confirm: confirmation,
-					rollback,
-				},
-			);
-			setMessage(
-				`${result.state}. Commit ${result.commit}. Honcho API and deriver will restart; allow a few minutes.`,
-			);
-			setTest(undefined);
-			setConfirmation("");
-			await status.refetch();
-		} catch (cause) {
-			setMessage(cause instanceof Error ? cause.message : "Apply failed");
-		} finally {
-			setBusy("");
-		}
-	}
+
 	return (
 		<section
 			aria-label="Honcho model administration"
@@ -116,7 +85,7 @@ export function ModelManager() {
 							</p>
 							<p>Embedding: {status.data.embedding} (unchanged)</p>
 							<details>
-								<summary>Git revision and all chat slots</summary>
+								<summary>Live revision and all chat slots</summary>
 								<p className="break-all">{status.data.revision}</p>
 								{Object.entries(status.data.slots).map(([slot, value]) => (
 									<p key={slot} className="break-all">
@@ -124,17 +93,6 @@ export function ModelManager() {
 									</p>
 								))}
 							</details>
-							<button
-								type="button"
-								className={buttonClass}
-								style={controlStyle}
-								disabled={Boolean(busy) || !status.data.previous.model}
-								onClick={() =>
-									select(status.data?.previous.model ?? "", status.data?.previous.provider, true)
-								}
-							>
-								Prepare rollback to {status.data.previous.model ?? "previous model (none yet)"}
-							</button>
 						</div>
 					)}
 					<div className="flex flex-wrap gap-2 items-center">
@@ -253,13 +211,13 @@ export function ModelManager() {
 					{model && (
 						<div className="space-y-3">
 							<p className="break-all">
-								<strong>{rollback ? "Rollback target" : "Selected"}:</strong> {model}
+								<strong>Selected:</strong> {model}
 							</p>
 							<p className="text-xs">
 								Compatibility checks plain chat, structured output and tools with production token
-								budgets, temperature and reasoning settings. A passing test is required before
-								applying and expires after 10 minutes. Applying normalizes chat structured output to
-								json_object; rollback restores the previous managed settings.
+								budgets, temperature and reasoning settings. Model changes are deliberately not
+								available from the dashboard; an operator applies a passing selection through the
+								controlled GitOps workflow.
 							</p>
 							<button
 								type="button"
@@ -276,7 +234,7 @@ export function ModelManager() {
 										<strong>
 											{test.passed
 												? "Compatibility passed"
-												: "Compatibility failed — apply blocked"}
+												: "Compatibility failed — operator change blocked"}
 										</strong>
 									</p>
 									{test.results.map((result) => (
@@ -287,31 +245,6 @@ export function ModelManager() {
 									))}
 								</div>
 							)}
-							<label className="block text-sm">
-								Type the exact selected model ID to confirm restart
-								<input
-									aria-label="Confirm model ID"
-									className="block w-full rounded-lg p-2 mt-1"
-									style={controlStyle}
-									value={confirmation}
-									disabled={Boolean(busy)}
-									onChange={(e) => setConfirmation(e.target.value)}
-								/>
-							</label>
-							<button
-								type="button"
-								className={buttonClass}
-								style={controlStyle}
-								disabled={
-									Boolean(busy) ||
-									!test?.passed ||
-									confirmation !== model ||
-									test.revision !== status.data?.revision
-								}
-								onClick={() => void apply()}
-							>
-								Apply model via GitOps
-							</button>
 						</div>
 					)}
 				</>

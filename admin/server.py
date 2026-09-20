@@ -152,7 +152,10 @@ class Controller:
         self.repo = Path(os.environ.get('GIT_WORKDIR', '/tmp/gitops'))
 
     def git(self, *args):
-        env = dict(os.environ, GIT_SSH_COMMAND='ssh -i /tmp/ssh/identity -o UserKnownHostsFile=/tmp/ssh/known_hosts -o IdentitiesOnly=yes')
+        env = dict(os.environ, GIT_ASKPASS='/bin/true',
+                   GIT_CONFIG_COUNT='1',
+                   GIT_CONFIG_KEY_0='credential.helper',
+                   GIT_CONFIG_VALUE_0='!f() { echo username=git; echo password=$(cat /run/git-token/token); }; f')
         result = subprocess.run(['git', '-C', str(self.repo), *args], capture_output=True,
                                 timeout=30, check=False, env=env)
         if result.returncode:
@@ -293,8 +296,7 @@ class Controller:
         marker = secrets.token_hex(12)
         annotations[ANNOTATION] = marker
         # Keep existing data lines byte-preserved, changing only metadata and selected chat settings.
-        metadata_end = updated.index('data:\n')
-        updated = yaml.safe_dump({k:v for k,v in doc.items() if k != 'data'}, sort_keys=False) + updated[metadata_end:]
+        updated = yaml.safe_dump(doc, sort_keys=False)
         (self.repo / CONFIG_PATH).write_text(updated)
         profile = PROVIDERS[provider]
         for filename in ['api.yaml', 'deriver.yaml']:

@@ -15,7 +15,7 @@ export function useWorkspaces(page = 1, pageSize = 20) {
 		queryKey: QK.workspaces(page, pageSize),
 		queryFn: async () => {
 			const { data, error } = await client.current.POST("/v3/workspaces/list", {
-				params: { query: { page, page_size: pageSize } },
+				params: { query: { page, size: pageSize } },
 				body: {},
 			});
 			return data ?? err(error);
@@ -139,7 +139,7 @@ export function usePeers(workspaceId: string, page = 1, pageSize = 20) {
 			const { data, error } = await client.current.POST(
 				"/v3/workspaces/{workspace_id}/peers/list",
 				{
-					params: { path: { workspace_id: workspaceId }, query: { page, page_size: pageSize } },
+					params: { path: { workspace_id: workspaceId }, query: { page, size: pageSize } },
 					body: {},
 				},
 			);
@@ -253,7 +253,7 @@ export function usePeerSessions(workspaceId: string, peerId: string, page = 1, p
 				{
 					params: {
 						path: { workspace_id: workspaceId, peer_id: peerId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize },
 					},
 					body: {},
 				},
@@ -323,7 +323,7 @@ export function useSessions(workspaceId: string, page = 1, pageSize = 20) {
 				{
 					params: {
 						path: { workspace_id: workspaceId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize },
 					},
 					body: {},
 				},
@@ -412,7 +412,7 @@ export function useSessionMessages(
 				{
 					params: {
 						path: { workspace_id: workspaceId, session_id: sessionId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize },
 					},
 					body: {},
 				},
@@ -642,7 +642,7 @@ export function useConclusions(
 				{
 					params: {
 						path: { workspace_id: workspaceId },
-						query: { page, page_size: pageSize, reverse },
+						query: { page, size: pageSize, reverse },
 					},
 					body: filters,
 				},
@@ -746,7 +746,7 @@ export function useDreams(
 					{
 						params: {
 							path: { workspace_id: workspaceId },
-							query: { page, page_size: pageSize, reverse: false },
+							query: { page, size: pageSize, reverse: true },
 						},
 						body: filters,
 					},

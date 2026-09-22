@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { dispatchFor, PROXY_REJECT_HEADER } from "@/lib/dispatch";
-import { runtimeDefaultBaseUrl } from "@/lib/runtimeConfig";
+import { defaultHonchoUrl } from "@/lib/runtimeConfig";
 
 const LEGACY_KEY = "openconcho:config";
 const STORE_KEY = "openconcho:instances";
@@ -83,7 +83,7 @@ export function loadStore(): InstanceStore {
 	if (migrated) return migrated;
 
 	// First-run default from a container's runtime config (no-op outside Docker).
-	const runtimeUrl = runtimeDefaultBaseUrl();
+	const runtimeUrl = defaultHonchoUrl();
 	if (runtimeUrl) {
 		const inst: Instance = {
 			id: "runtime-default",

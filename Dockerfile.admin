@@ -9,12 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
-RUN pip install --no-cache-dir pyyaml passlib[bcrypt] requests
+RUN pip install --no-cache-dir pyyaml==6.0.2 passlib[bcrypt]==1.7.4 requests==2.32.5
 
-# Copy admin server and Git credential helper
-COPY admin/server.py /app/admin/server.py
-COPY admin/git-askpass.sh /app/admin/git-askpass.sh
-RUN chmod 0555 /app/admin/git-askpass.sh
+# Copy admin server and all modules
+COPY admin/server.py admin/auth.py admin/request_queue.py admin/proofs.py /app/admin/
 
 # Default command
 CMD ["python3", "/app/admin/server.py"]

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SidebarProvider } from "@/components/layout/SidebarContext";
 import { DemoProvider } from "@/context/DemoContext";
 import { MetadataProvider } from "@/context/MetadataContext";
 import type { Instance } from "@/lib/config";
@@ -48,8 +49,10 @@ function renderDashboard() {
 		<QueryClientProvider client={qc}>
 			<DemoProvider>
 				<MetadataProvider>
-					{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
-					<RouterProvider router={router as any} />
+					<SidebarProvider>
+						{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
+						<RouterProvider router={router as any} />
+					</SidebarProvider>
 				</MetadataProvider>
 			</DemoProvider>
 		</QueryClientProvider>,

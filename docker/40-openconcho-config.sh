@@ -7,8 +7,17 @@
 # so the container works cleanly under a read-only root filesystem.
 set -eu
 
+# Application auth is fail-closed unless explicitly disabled for standalone
+# development/desktop packaging. The deployed private UI sets this to true.
+case "${OPENCONCHO_REQUIRE_APP_AUTH:-true}" in
+    true|1) APP_AUTH=true; printf 'auth_request /_openconcho_auth;\n' > /etc/nginx/conf.d/openconcho-api-auth.inc ;;
+    false|0) APP_AUTH=false; printf 'auth_request off;\n' > /etc/nginx/conf.d/openconcho-api-auth.inc ;;
+    *) printf 'Invalid OPENCONCHO_REQUIRE_APP_AUTH\n' >&2; exit 1 ;;
+esac
+
 cat > /tmp/openconcho-config.js <<EOF
 window.__OPENCONCHO_DEFAULT_HONCHO_URL__ = "${OPENCONCHO_DEFAULT_HONCHO_URL:-}";
+window.__OPENCONCHO_REQUIRE_APP_AUTH__ = ${APP_AUTH};
 EOF
 
 # Derive nginx's resolver from the container's own DNS so the runtime-variable

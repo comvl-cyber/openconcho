@@ -16,15 +16,32 @@ server {
     # is rendered by the entrypoint into conf.d from the container's own DNS, so it
     # works on both user-defined networks (127.0.0.11) and the default bridge.
 
-    # Private Honcho model administration API. The outer UI ingress performs
-    # Basic Auth and preserves the Authorization header for the admin service.
+    # The outer ingress remains the first authentication layer. Application
+    # sessions are independently validated here; Basic Auth is never a session.
+    location = /_openconcho_auth {
+        internal;
+        proxy_pass http://openconcho-admin.honcho.svc.cluster.local:8091/admin-api/auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header Authorization "";
+        proxy_set_header X-Original-Method $request_method;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Sec-Fetch-Site $http_sec_fetch_site;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # Login/session endpoints must reach the application without auth_request;
+    # the backend itself enforces cookie auth and CSRF on protected endpoints.
     location ^~ /admin-api/ {
-        proxy_pass http://honcho-model-admin.honcho.svc.cluster.local:8091;
+        proxy_pass http://openconcho-admin.honcho.svc.cluster.local:8091;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie $http_cookie;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Debug-Cookie $http_cookie;
         proxy_read_timeout 360s;
         proxy_send_timeout 360s;
     }
@@ -33,7 +50,14 @@ server {
     # request via X-Honcho-Upstream, so the browser never makes a cross-origin call.
     # $allow_upstream is provided by the allowlist map in conf.d (entrypoint-rendered).
     location ^~ /api/ {
+        include /etc/nginx/conf.d/openconcho-api-auth.inc;
         set $upstream $http_x_honcho_upstream;
+        # An optional Honcho Bearer token may pass through, but never the
+        # ingress's Basic credential or the application's session cookie.
+        set $honcho_authorization "";
+        if ($http_authorization ~* "^Bearer ") {
+            set $honcho_authorization $http_authorization;
+        }
         if ($upstream = "") {
             add_header X-Honcho-Proxy-Reject "no-upstream" always;
             return 421;
@@ -47,6 +71,9 @@ server {
         proxy_ssl_server_name    on;
         proxy_set_header Host    $proxy_host;
         proxy_set_header X-Honcho-Upstream "";
+        proxy_set_header Cookie "";
+        proxy_set_header Authorization $honcho_authorization;
+        proxy_hide_header Set-Cookie;
     }
 
     # Runtime config — regenerated per container start, must never be cached.

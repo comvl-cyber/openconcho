@@ -1,0 +1,29 @@
+[Unit]
+Description=OpenConcho Executor Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/workspaces/openconcho
+Environment=OPENCONCHO_REQUESTS_DIR=/var/lib/openconcho/requests
+Environment=OPENCONCHO_POLL_INTERVAL=5
+Environment=HERMES_CONFIG=/root/.hermes/config.yaml
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python -m executor.daemon
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openconcho-executor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openconcho/requests
+ReadOnlyPaths=/root/.hermes/config.yaml /root/.hermes/.env
+
+[Install]
+WantedBy=multi-user.target

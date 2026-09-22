@@ -8,6 +8,7 @@ import {
 	DEFAULT_ROW_METRICS,
 	type FleetRowMetrics,
 } from "@/components/fleet/fleetAggregates";
+import { SidebarProvider } from "@/components/layout/SidebarContext";
 import { DemoProvider } from "@/context/DemoContext";
 import { MetadataProvider } from "@/context/MetadataContext";
 import type { Instance } from "@/lib/config";
@@ -144,8 +145,10 @@ function renderRouteAt(initialPath: string) {
 		<QueryClientProvider client={qc}>
 			<DemoProvider>
 				<MetadataProvider>
-					{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
-					<RouterProvider router={router as any} />
+					<SidebarProvider>
+						{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
+						<RouterProvider router={router as any} />
+					</SidebarProvider>
 				</MetadataProvider>
 			</DemoProvider>
 		</QueryClientProvider>,

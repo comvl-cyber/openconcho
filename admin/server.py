@@ -5,6 +5,11 @@ import json
 import os
 import re
 from passlib.hash import apr_md5_crypt, bcrypt
+from auth import Sessions, LoginLimiter, verify_login
+from proofs import Proofs
+from request_queue import (list_requests, create_request, validate_model_switch,
+                      validate_model_add, validate_provider_upsert, load_favorites,
+                      ALLOWED_PRESETS)
 
 SLOTS = ['DERIVER_MODEL_CONFIG', 'SUMMARY_MODEL_CONFIG',
          'DREAM_DEDUCTION_MODEL_CONFIG', 'DREAM_INDUCTION_MODEL_CONFIG'] + [
@@ -67,7 +72,6 @@ from urllib.parse import urlsplit, parse_qs, urljoin
 import requests
 import yaml
 
-ANNOTATION = 'openconcho.io/model-change'
 MAX_RESPONSE = 8 * 1024 * 1024
 
 
@@ -113,10 +117,22 @@ def valid_answer(response, structured):
         return False
 
 
+def deployment_is_ready(deployment):
+    """Return rollout health from Kubernetes status, independent of config markers."""
+    status = deployment.get('status', {})
+    desired = deployment.get('spec', {}).get('replicas', 1)
+    return (status.get('observedGeneration', 0) >= deployment.get('metadata', {}).get('generation', 0) and
+            status.get('updatedReplicas', 0) == desired and
+            status.get('availableReplicas', 0) == desired and
+            status.get('replicas', 0) == desired)
+
+
 class Controller:
     def __init__(self):
         self.lock = threading.Lock()
-        self.csrf = secrets.token_urlsafe(32)
+        self.sessions = Sessions()
+        self.login_limiter = LoginLimiter()
+        self.proofs = Proofs()
         self.catalogs = {}
 
     def snapshot(self):
@@ -173,7 +189,7 @@ class Controller:
         self.catalogs[provider] = (time.time(), result)
         return result
 
-    def test(self, body):
+    def test(self, body, session):
         provider, model = validate_selection(body)
         revision, source = self.snapshot()
         cached = self.catalogs.get(provider)
@@ -216,8 +232,13 @@ class Controller:
             if structured and not passed:
                 break
         passed = len(results) == len(cases) and all(row['passed'] for row in results)
-        return {'revision': revision, 'passed': passed, 'results': results,
-                'policy': 'Read-only compatibility check. Model changes are operator-controlled; embeddings remain unchanged.'}
+        if not passed:
+            return {'revision': revision, 'passed': False, 'results': results,
+                    'policy': 'Read-only compatibility check. Model changes are operator-controlled; embeddings remain unchanged.'}
+        issued = self.proofs.issue(provider, model, revision, session)
+        return {'revision': revision, 'passed': True, 'results': results,
+                'policy': 'Read-only compatibility check. Model changes are operator-controlled; embeddings remain unchanged.',
+                'proof': issued['proof'], 'testedAt': issued['testedAt'], 'proofExpiresAt': issued['proofExpiresAt']}
 
     def kube(self, path):
         root = Path('/var/run/secrets/kubernetes.io/serviceaccount')
@@ -228,18 +249,10 @@ class Controller:
         revision, source = self.snapshot()
         config = yaml.safe_load(source)
         data = config['data']
-        annotations = config['metadata'].get('annotations', {})
-        marker = annotations.get(ANNOTATION)
         deployments = []
         for name in ['honcho-api', 'honcho-deriver']:
             deployment = self.kube('/apis/apps/v1/namespaces/honcho/deployments/' + name)
-            status = deployment.get('status', {})
-            live_marker = deployment['spec']['template']['metadata'].get('annotations', {}).get(ANNOTATION)
-            ready = (status.get('observedGeneration', 0) >= deployment['metadata']['generation'] and
-                     status.get('updatedReplicas', 0) == deployment['spec'].get('replicas', 1) and
-                     status.get('availableReplicas', 0) == deployment['spec'].get('replicas', 1) and
-                     status.get('replicas', 0) == deployment['spec'].get('replicas', 1) and live_marker == marker)
-            deployments.append({'name': name, 'ready': ready})
+            deployments.append({'name': name, 'ready': deployment_is_ready(deployment)})
         return {'revision': revision, 'model': data[SLOTS[0]+'__MODEL'],
                 'slots': {s:data[s+'__MODEL'] for s in SLOTS},
                 'provider': next((p for p,v in PROVIDERS.items() if v['url'] == data[SLOTS[0]+'__OVERRIDES__BASE_URL']), 'unknown'),
@@ -259,32 +272,102 @@ class Handler(BaseHTTPRequestHandler):
         super().setup()
         self.connection.settimeout(10)
 
-    def respond(self, status, body):
-        encoded = json.dumps(body).encode()
+    def respond(self, status, body, cookie=None):
+        encoded = json.dumps(body).encode() if body is not None else b''
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Length', str(len(encoded)))
-        if status == 401:
-            self.send_header('WWW-Authenticate', 'Basic realm="Honcho administration", charset="UTF-8"')
+        if cookie:
+            self.send_header('Set-Cookie', cookie)
         self.end_headers()
         self.wfile.write(encoded)
+
+    def same_origin(self):
+        origin = os.environ.get('ADMIN_ORIGIN')
+        return bool(origin and self.headers.get('Origin') == origin and
+                    self.headers.get('Sec-Fetch-Site') == 'same-origin')
+
+    def read_body(self):
+        if self.headers.get('Content-Type') != 'application/json' or self.headers.get('Transfer-Encoding'):
+            raise ValueError('JSON body required')
+        length = int(self.headers.get('Content-Length', '0'))
+        if not 0 < length <= 4096:
+            raise ValueError('Body size limit exceeded')
+        return json.loads(self.rfile.read(length))
+
+    def session_body(self, session):
+        return {'csrf': session['csrf'], 'providers': [
+            {'id': p, 'name': v['name'], 'url': v['url'],
+             'configured': bool(os.environ.get(v['key_env']) or os.environ.get(v['key_env'] + '_FILE'))}
+            for p, v in PROVIDERS.items()]}
 
     def handle_api(self, mutation=False):
         try:
             path = urlsplit(self.path)
-            if not mutation and path.path == '/admin-api/health':
+            if not mutation and path.path in ('/health', '/admin-api/health'):
                 return self.respond(200, {'status': 'ok'})
-            users = Path(os.environ.get('AUTH_FILE', '/auth/users')).read_text()
-            if not authorize(self.headers, users):
-                return self.respond(401, {'error': 'Administrator authentication required'})
-            if mutation and not check_csrf(self.headers, self.controller.csrf, os.environ['ADMIN_ORIGIN']):
+            if mutation and path.path == '/admin-api/login':
+                if not self.same_origin():
+                    return self.respond(403, {'error': 'Same-origin validation failed'})
+                client = self.client_address[0]
+                ticket = self.controller.login_limiter.reserve(client)
+                if ticket is None:
+                    return self.respond(429, {'error': 'Invalid username or password'})
+                try:
+                    body = self.read_body()
+                except (ValueError, UnicodeError):
+                    return self.respond(401, {'error': 'Invalid username or password'})
+                users = Path(os.environ.get('AUTH_FILE', '/auth/users')).read_text()
+                if not verify_login(body, users):
+                    return self.respond(401, {'error': 'Invalid username or password'})
+                self.controller.login_limiter.succeeded(client, ticket)
+                self.controller.sessions.revoke(self.headers)
+                token, session = self.controller.sessions.create(body['username'])
+                return self.respond(200, self.session_body(session), self.controller.sessions.cookie(token))
+            session = self.controller.sessions.get(self.headers)
+            if not session:
+                return self.respond(401, {'error': 'Application authentication required'})
+            if not mutation and path.path == '/admin-api/auth':
+                original = self.headers.get('X-Original-Method', 'GET')
+                if original not in ('GET', 'HEAD', 'OPTIONS') and not self.same_origin():
+                    return self.respond(403, {'error': 'Same-origin validation failed'})
+                return self.respond(204, None)
+            if mutation and not check_csrf(self.headers, session['csrf'], os.environ['ADMIN_ORIGIN']):
                 return self.respond(403, {'error': 'Same-origin CSRF validation failed'})
+            if mutation and path.path == '/admin-api/logout':
+                if self.read_body() != {}:
+                    raise ValueError('Logout requires an empty object')
+                self.controller.sessions.revoke(self.headers)
+                return self.respond(200, {'ok': True}, self.controller.sessions.cookie(''))
             if not mutation and path.path == '/admin-api/session':
-                return self.respond(200, {'csrf': self.controller.csrf, 'providers': [
-                    {'id': p, 'name': v['name'], 'configured': bool(os.environ.get(v['key_env']))}
-                    for p,v in PROVIDERS.items()]})
+                return self.respond(200, self.session_body(session))
+            if mutation and path.path == '/admin-api/requests':
+                body = self.read_body()
+                if not isinstance(body, dict):
+                    raise ValueError('Invalid request body')
+                if body.get('kind') == 'model-switch':
+                    validated = validate_model_switch(body, body.get('provider', ''), self.controller, session)
+                elif body.get('kind') == 'model-add':
+                    validated = validate_model_add(body, self.controller)
+                elif body.get('kind') == 'provider-upsert':
+                    validated = validate_provider_upsert(body)
+                else:
+                    raise ValueError('Unknown request kind')
+                result = create_request(body['kind'], validated, session['username'])
+                return self.respond(202, {'request': result})
+            if not mutation and path.path == '/admin-api/requests':
+                favorites = load_favorites()
+                provider_presets = [{'id': p['id'], 'name': p['name'], 'url': p['url'], 'credentialRef': p['credentialRef']}
+                                    for p in ALLOWED_PRESETS.values()]
+                result = {'csrf': session['csrf'], 'providers': [
+                    {'id': p, 'name': v['name'], 'url': v['url'],
+                     'configured': bool(os.environ.get(v['key_env']) or os.environ.get(v['key_env'] + '_FILE'))}
+                    for p, v in PROVIDERS.items()],
+                    'providerPresets': provider_presets, 'favorites': favorites,
+                    'requests': list_requests()[:50], 'count': len(list_requests())}
+                return self.respond(200, result)
             if not self.controller.lock.acquire(blocking=False):
                 return self.respond(409, {'error': 'Another administrative operation is running; retry shortly'})
             try:
@@ -296,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond(413, {'error': 'Body size limit exceeded'})
                     body = json.loads(self.rfile.read(length))
                     if path.path == '/admin-api/test':
-                        result = self.controller.test(body)
+                        result = self.controller.test(body, session)
                     else:
                         return self.respond(404, {'error': 'Not found'})
                 elif path.path == '/admin-api/catalog':
@@ -340,3 +423,34 @@ if __name__ == '__main__':
                     raise ValueError('Invalid secret key in provider profile')
         PROVIDERS.update(configured)
     ThreadingHTTPServer(('0.0.0.0', 8091), Handler).serve_forever()
+
+
+def reload_providers_from_configmap():
+    """Reload provider profiles from PROVIDERS_FILE ConfigMap at runtime.
+    Only allows safe keys: id, name, url, credentialRef, secret, secret_key.
+    Rejects arbitrary UI URLs or keys."""
+    if not os.environ.get('PROVIDERS_FILE'):
+        return
+    path = Path(os.environ['PROVIDERS_FILE'])
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    try:
+        configured = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+    for key, profile in configured.items():
+        url = urlsplit(profile.get('url', ''))
+        if (not re.fullmatch(r'[a-z][a-z0-9-]{0,30}', key) or url.scheme != 'https' or
+                not url.hostname or url.username or url.password or url.query or url.fragment or
+                url.port not in (None, 443)):
+            continue
+        # Allow per-provider secret configuration (secret name + key)
+        if 'secret' in profile:
+            if not re.fullmatch(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?', profile['secret']):
+                continue
+        if 'secret_key' in profile:
+            if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,62}', profile['secret_key']):
+                continue
+        # Only update allowed fields
+        safe = {k: profile[k] for k in ('name', 'url', 'credentialRef', 'secret', 'secret_key') if k in profile}
+        PROVIDERS[key] = {**PROVIDERS.get(key, {}), **safe}

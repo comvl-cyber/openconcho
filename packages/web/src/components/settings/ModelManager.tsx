@@ -2,51 +2,54 @@ import { useState } from "react";
 import {
 	adminRequest,
 	type CompatibilityResult,
+	queueModelAdd,
+	queueModelSwitch,
 	useAdminSession,
 	useModelCatalog,
 	useModelStatus,
 } from "@/api/model-admin";
+import { FormModal } from "@/components/shared/FormModal";
+import { cn } from "@/lib/utils";
+import { AdminRequestsPanel } from "./AdminRequestsPanel";
+import { ModelCatalogBrowser } from "./ModelCatalogBrowser";
+import { ProviderManager } from "./ProviderManager";
 
-const controlStyle = {
-	background: "var(--bg-2)",
-	color: "var(--text-1)",
-	border: "1px solid var(--border)",
-};
-const buttonClass = "rounded-lg px-3 py-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed";
+const TABS = ["Models", "Providers", "Activity"] as const;
 
 export function ModelManager() {
 	const session = useAdminSession();
-	const [provider, setProvider] = useState("openrouter");
+	const [tab, setTab] = useState<(typeof TABS)[number]>("Models");
+	const [chosenProvider, setProvider] = useState("");
 	const [model, setModel] = useState("");
-	const [search, setSearch] = useState("");
-	const [knownOnly, setKnownOnly] = useState(false);
-	const [test, setTest] = useState<CompatibilityResult>();
+	const [test, setTest] = useState<CompatibilityResult | null>(null);
 	const [busy, setBusy] = useState("");
 	const [message, setMessage] = useState("");
-	const status = useModelStatus(Boolean(session.data) && !busy);
-	const catalog = useModelCatalog(provider, Boolean(session.data) && !busy);
+	const [dialogOpen, setDialogOpen] = useState<{
+		kind: "confirm-switch" | "confirm-add";
+		provider: string;
+		model: string;
+		revision?: string;
+		proof?: string;
+	} | null>(null);
+	const provider =
+		chosenProvider || session.data?.providers.find((item) => item.configured)?.id || "";
+	const configured =
+		session.data?.providers.some((item) => item.id === provider && item.configured) ?? false;
+	const enabled = Boolean(session.data) && !session.error;
+	const status = useModelStatus(enabled);
+	const catalog = useModelCatalog(provider, enabled && configured);
 	const error = session.error ?? status.error ?? catalog.error;
-	const models =
-		catalog.data?.models.filter(
-			(item) =>
-				`${item.id} ${item.name}`.toLowerCase().includes(search.toLowerCase()) &&
-				(!knownOnly || (item.input !== null && item.output !== null)),
-		) ?? [];
-	const select = (id: string, nextProvider = provider) => {
-		setProvider(nextProvider);
-		setModel(id);
-		setTest(undefined);
-		setMessage("");
-	};
+
 	async function runTest() {
+		if (!provider || !model || !session.data) return;
 		setBusy(
 			"Testing production parameters… This makes paid API calls and can take several minutes.",
 		);
-		setTest(undefined);
+		setTest(null);
 		setMessage("");
 		try {
 			setTest(
-				await adminRequest<CompatibilityResult>("test", session.data?.csrf, { provider, model }),
+				await adminRequest<CompatibilityResult>("test", session.data.csrf, { provider, model }),
 			);
 		} catch (cause) {
 			setMessage(cause instanceof Error ? cause.message : "Test failed");
@@ -55,205 +58,301 @@ export function ModelManager() {
 		}
 	}
 
+	async function confirmSwitch() {
+		if (!dialogOpen || !session.data || !test?.passed || !test.proof || !dialogOpen.revision) {
+			return;
+		}
+		setBusy("Submitting model switch…");
+		try {
+			await queueModelSwitch(
+				session.data.csrf,
+				dialogOpen.provider,
+				dialogOpen.model,
+				dialogOpen.revision,
+				test.proof,
+			);
+			setMessage("Model switch request queued");
+		} catch (cause) {
+			setMessage(cause instanceof Error ? cause.message : "Failed to queue switch");
+		} finally {
+			setBusy("");
+			setDialogOpen(null);
+		}
+	}
+
+	async function confirmAdd() {
+		if (!dialogOpen || !session.data) return;
+		setBusy("Submitting model add…");
+		try {
+			await queueModelAdd(session.data.csrf, dialogOpen.provider, dialogOpen.model);
+			setMessage("Model add request queued");
+		} catch (cause) {
+			setMessage(cause instanceof Error ? cause.message : "Failed to queue add");
+		} finally {
+			setBusy("");
+			setDialogOpen(null);
+		}
+	}
+
 	return (
-		<section
-			aria-label="Honcho model administration"
-			className="mt-8 rounded-xl p-5 space-y-4"
-			style={{ ...controlStyle, background: "var(--bg-1)" }}
-		>
-			<div>
-				<h2 className="text-xl font-semibold">Honcho models</h2>
-				<p className="text-sm mt-1" style={{ color: "var(--text-3)" }}>
-					Manage this server’s nine chat slots, not the browser’s active connection. Provider keys
-					stay on the server. Embeddings are never changed.
+		<section aria-label="Honcho model administration" className="model-manager">
+			<header className="model-manager-header">
+				<div className="model-manager-title">
+					<div>
+						<p className="eyebrow">SERVER CONFIGURATION</p>
+						<h2>Honcho models</h2>
+						<p>Choose deliberately. Test compatibility. Track every change.</p>
+					</div>
+				</div>
+			</header>
+			<p className="muted">
+				Manage this server's nine chat slots, not the browser's active connection. Provider keys
+				stay on the server. Embeddings are never changed.
+			</p>
+			{session.isPending && <p role="status">Checking administrator access…</p>}
+			{error && (
+				<p role="alert" className="notice notice-error">
+					{error.message}
 				</p>
-			</div>
-			{session.isPending && <p>Checking administrator access…</p>}
-			{error && <p role="alert">{error.message}</p>}
-			{session.data && (
+			)}
+			{enabled && session.data && (
 				<>
 					{status.data && (
-						<div className="rounded-lg p-3 text-sm space-y-1" style={controlStyle}>
-							<p>
-								<strong>Current desired model:</strong> {status.data.provider} / {status.data.model}
-							</p>
-							<p>
-								<strong>Rollout:</strong> {status.data.state}{" "}
-								{status.data.deployments
-									.map((d) => `${d.name}: ${d.ready ? "ready" : "pending"}`)
-									.join(" · ")}
-							</p>
-							<p>Embedding: {status.data.embedding} (unchanged)</p>
+						<section className="model-current" aria-label="Current configuration">
+							<div>
+								<p className="eyebrow">CURRENT DESIRED MODEL</p>
+								<strong>{status.data.model}</strong>
+								<p className="muted">
+									{status.data.provider} · Rollout: {status.data.state}
+								</p>
+							</div>
+							<p className="muted">Embedding: {status.data.embedding} (unchanged)</p>
 							<details>
 								<summary>Live revision and all chat slots</summary>
-								<p className="break-all">{status.data.revision}</p>
+								<p className="mono">{status.data.revision}</p>
 								{Object.entries(status.data.slots).map(([slot, value]) => (
-									<p key={slot} className="break-all">
+									<p key={slot} className="mono">
 										{slot}: {value}
 									</p>
 								))}
+								{status.data.deployments.map((item) => (
+									<p key={item.name}>
+										{item.name}: {item.ready ? "ready" : "pending"}
+									</p>
+								))}
 							</details>
-						</div>
+						</section>
 					)}
-					<div className="flex flex-wrap gap-2 items-center">
-						<label>
-							Provider{" "}
-							<select
-								aria-label="API provider"
-								className="rounded-lg p-2"
-								style={controlStyle}
-								value={provider}
-								disabled={Boolean(busy)}
-								onChange={(e) => select("", e.target.value)}
-							>
-								{session.data.providers.map((p) => (
-									<option key={p.id} value={p.id} disabled={!p.configured}>
-										{p.name}
-										{!p.configured ? " (not configured)" : ""}
-									</option>
-								))}
-							</select>
-						</label>
-						<button
-							type="button"
-							className={buttonClass}
-							style={controlStyle}
-							disabled={Boolean(busy) || catalog.isFetching}
-							onClick={() => {
-								setTest(undefined);
-								void catalog.refetch();
-							}}
-						>
-							Refresh catalog & pricing
-						</button>
-					</div>
-					<p className="text-xs" style={{ color: "var(--text-3)" }}>
-						Additional OpenAI-compatible providers must be configured by an operator in the private
-						service’s trusted provider profiles and Kubernetes Secrets. Arbitrary URLs and browser
-						API keys are not accepted. Providers without published pricing show “Unavailable”.
-					</p>
-					{catalog.data && (
-						<p className="text-xs break-all">
-							{catalog.data.count} models · Source: {catalog.data.source} · Fetched:{" "}
-							{catalog.data.fetchedAt} · Prices per 1 million tokens
-							{catalog.data.currency ? ` (${catalog.data.currency})` : " (currency unavailable)"}.
-							Provider estimates; taxes and route-specific costs may vary.
-						</p>
-					)}
-					<div className="flex flex-wrap gap-3">
-						<input
-							aria-label="Search models"
-							placeholder="Search model or vendor…"
-							className="flex-1 min-w-40 rounded-lg p-2"
-							style={controlStyle}
-							value={search}
-							onChange={(e) => setSearch(e.target.value)}
-						/>
-						<label className="text-sm flex items-center gap-2">
-							<input
-								type="checkbox"
-								checked={knownOnly}
-								onChange={(e) => setKnownOnly(e.target.checked)}
-							/>
-							Known pricing only
-						</label>
-					</div>
-					<div className="overflow-auto max-h-72 rounded-lg" style={controlStyle}>
-						<table className="w-full text-sm text-left">
-							<thead>
-								<tr>
-									<th className="p-2">Model</th>
-									<th className="p-2">Input / 1M</th>
-									<th className="p-2">Output / 1M</th>
-									<th className="p-2">Cached input / 1M</th>
-								</tr>
-							</thead>
-							<tbody>
-								{models.map((item) => (
-									<tr
-										key={item.id}
-										style={{ background: model === item.id ? "var(--bg-3)" : undefined }}
-									>
-										<td className="p-2">
-											<button
-												type="button"
-												aria-label={`Select ${item.id}`}
-												className="text-left break-all"
-												disabled={Boolean(busy)}
-												onClick={() => select(item.id)}
-											>
-												{item.id}
-												{model === item.id ? " ✓" : ""}
-											</button>
-										</td>
-										{[item.input, item.output, item.cache].map((price, index) => (
-											<td
-												key={["input", "output", "cache"][index]}
-												className="p-2 whitespace-nowrap"
-											>
-												{price === null
-													? "Unavailable"
-													: `${catalog.data?.currency ?? ""} ${price}`}
-											</td>
-										))}
-									</tr>
-								))}
-							</tbody>
-						</table>
-						{!models.length && (
-							<p className="p-3">
-								{catalog.isFetching
-									? "Fetching provider catalog…"
-									: "No models match these filters."}
-							</p>
-						)}
-					</div>
-					{model && (
-						<div className="space-y-3">
-							<p className="break-all">
-								<strong>Selected:</strong> {model}
-							</p>
-							<p className="text-xs">
-								Compatibility checks plain chat, structured output and tools with production token
-								budgets, temperature and reasoning settings. Model changes are deliberately not
-								available from the dashboard; an operator applies a passing selection through the
-								controlled GitOps workflow.
-							</p>
+					<div className="model-manager-tabs" role="tablist" aria-label="Model administration">
+						{TABS.map((item) => (
 							<button
 								type="button"
-								className={buttonClass}
-								style={controlStyle}
-								disabled={Boolean(busy)}
-								onClick={() => void runTest()}
+								key={item}
+								role="tab"
+								aria-selected={tab === item}
+								aria-controls={`model-panel-${item}`}
+								id={`model-tab-${item}`}
+								className={`model-manager-tab ${tab === item ? "active" : ""}`}
+								onClick={() => setTab(item)}
 							>
-								Test compatibility (uses API credits)
+								{item}
 							</button>
-							{test && (
-								<div role="status">
-									<p>
-										<strong>
-											{test.passed
-												? "Compatibility passed"
-												: "Compatibility failed — operator change blocked"}
-										</strong>
-									</p>
-									{test.results.map((result) => (
-										<p key={result.name} className="text-xs">
-											{result.passed ? "PASS" : "FAIL"} · {result.name} · {result.milliseconds} ms ·{" "}
-											{result.detail}
-										</p>
-									))}
-								</div>
-							)}
-						</div>
-					)}
+						))}
+					</div>
+					<div role="tabpanel" id={`model-panel-${tab}`} aria-labelledby={`model-tab-${tab}`}>
+						{(() => {
+							if (tab === "Models")
+								return (
+									<div className="model-manager-section">
+										<div className="model-toolbar">
+											<label className="field">
+												API provider
+												<select
+													aria-label="API provider"
+													value={provider}
+													onChange={(event) => {
+														setProvider(event.target.value);
+														setModel("");
+														setTest(null);
+													}}
+												>
+													{!provider && <option value="">Select a provider</option>}
+													{session.data.providers.map((item) => (
+														<option key={item.id} value={item.id}>
+															{item.name}
+															{item.configured ? "" : " (credential not configured)"}
+														</option>
+													))}
+												</select>
+											</label>
+											<button
+												type="button"
+												className="control-button"
+												disabled={!configured || catalog.isFetching}
+												onClick={() => void catalog.refetch()}
+											>
+												Refresh catalog & pricing
+											</button>
+										</div>
+										{!configured ? (
+											<p className="notice">
+												No server credential configured for this provider. See Providers for setup.
+											</p>
+										) : (
+											<ModelCatalogBrowser
+												catalog={catalog.data}
+												loading={catalog.isFetching}
+												selected={model}
+												onSelect={setModel}
+											/>
+										)}
+										<section aria-label="Saved model library" className="model-library">
+											<h3>Saved model library</h3>
+											<p className="muted">
+												Saved selections are not active until tested and switched.
+											</p>
+											{(session.data.favorites ?? []).length ? (
+												<div className="model-library-items">
+													{session.data.favorites.map((item) => (
+														<button
+															type="button"
+															className="control-button"
+															key={`${item.provider}/${item.model}`}
+															onClick={() => {
+																setProvider(item.provider);
+																setModel(item.model);
+																setTest(null);
+															}}
+														>
+															<span>
+																{item.model}
+																<small>{item.provider}</small>
+															</span>
+														</button>
+													))}
+												</div>
+											) : (
+												<p className="muted">No saved models yet.</p>
+											)}
+										</section>
+										{model && (
+											<div className="model-selected">
+												<div className="model-selected-header">
+													<span className="model-selected-name">{model}</span>
+													<span className="muted">{provider}</span>
+												</div>
+												<p className="muted">
+													Compatibility checks plain chat, structured output and tools with
+													production token budgets, temperature and reasoning settings. Model
+													changes are deliberately not available from the dashboard; an operator
+													applies a passing selection through the controlled GitOps workflow.
+												</p>
+												<button
+													type="button"
+													className="control-button primary"
+													onClick={() => void runTest()}
+													disabled={Boolean(busy) || !configured}
+												>
+													{busy || "Test compatibility (uses API credits)"}
+												</button>
+												{test && (
+													<div
+														className={cn("model-test-result", test.passed ? "passed" : "failed")}
+														role="status"
+													>
+														<div className="model-test-result-header">
+															<strong>
+																{test.passed
+																	? "Compatibility passed — ready to switch"
+																	: "Compatibility failed — operator change blocked"}
+															</strong>
+														</div>
+														<div className="model-test-result details">
+															{test.results.map((result) => (
+																<p key={result.name}>
+																	{result.passed ? "PASS" : "FAIL"} · {result.name} ·{" "}
+																	{result.milliseconds} ms · {result.detail}
+																</p>
+															))}
+														</div>
+													</div>
+												)}
+											</div>
+										)}
+										{message && (
+											<p role="status" className="break-words">
+												{message}
+											</p>
+										)}
+										<FormModal
+											open={!!dialogOpen}
+											title={
+												dialogOpen?.kind === "confirm-switch"
+													? "Confirm model switch"
+													: "Confirm model add"
+											}
+											onClose={() => setDialogOpen(null)}
+											maxWidth="max-w-lg"
+										>
+											<div className="space-y-4">
+												{dialogOpen?.kind === "confirm-switch" ? (
+													<>
+														<p>
+															Switch <strong>{dialogOpen.provider}</strong> /{" "}
+															<strong>{dialogOpen.model}</strong> to revision{" "}
+															<code>{dialogOpen.revision}</code>?
+														</p>
+														<p className="muted">
+															This makes a paid API call test. Proof expires at{" "}
+															{test?.expiresAt ? new Date(test.expiresAt).toLocaleString() : "N/A"}.
+														</p>
+														<div className="notice">
+															<strong>Warning:</strong> This tests the model against production
+															parameters and consumes API credits. Only proceed if the test passed
+															above.
+														</div>
+													</>
+												) : (
+													<p>
+														Add <strong>{dialogOpen?.provider}</strong> /{" "}
+														<strong>{dialogOpen?.model}</strong> to the server catalog?
+													</p>
+												)}
+												{busy && (
+													<p role="status" className="muted">
+														{busy}
+													</p>
+												)}
+												<div className="flex justify-end gap-2">
+													<button
+														type="button"
+														className="control-button"
+														onClick={() => setDialogOpen(null)}
+														disabled={Boolean(busy)}
+													>
+														Cancel
+													</button>
+													<button
+														type="button"
+														className="control-button primary"
+														onClick={
+															dialogOpen?.kind === "confirm-switch" ? confirmSwitch : confirmAdd
+														}
+														disabled={Boolean(busy)}
+													>
+														{busy || "Confirm"}
+													</button>
+												</div>
+											</div>
+										</FormModal>
+									</div>
+								);
+							if (tab === "Providers")
+								return <ProviderManager session={session} csrf={session.data?.csrf ?? ""} />;
+							return <AdminRequestsPanel />;
+						})()}
+					</div>
 				</>
-			)}
-			{busy && <p role="status">{busy}</p>}
-			{message && (
-				<p role="status" className="break-words">
-					{message}
-				</p>
 			)}
 		</section>
 	);

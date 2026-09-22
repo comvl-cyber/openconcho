@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { SidebarProvider } from "@/components/layout/SidebarContext";
 import { DemoProvider } from "@/context/DemoContext";
 import { MetadataProvider } from "@/context/MetadataContext";
 import { useDemo } from "@/hooks/useDemo";
@@ -17,8 +18,10 @@ function renderAt(initialPath: string) {
 		<QueryClientProvider client={qc}>
 			<DemoProvider>
 				<MetadataProvider>
-					{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
-					<RouterProvider router={router as any} />
+					<SidebarProvider>
+						{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
+						<RouterProvider router={router as any} />
+					</SidebarProvider>
 				</MetadataProvider>
 			</DemoProvider>
 		</QueryClientProvider>,
@@ -60,9 +63,11 @@ describe("Sidebar/useDemo availability across routes", () => {
 				<QueryClientProvider client={qc}>
 					<DemoProvider>
 						<MetadataProvider>
-							{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
-							<RouterProvider router={router as any} />
-							<DemoConsumer />
+							<SidebarProvider>
+								{/* biome-ignore lint/suspicious/noExplicitAny: test router type */}
+								<RouterProvider router={router as any} />
+								<DemoConsumer />
+							</SidebarProvider>
 						</MetadataProvider>
 					</DemoProvider>
 				</QueryClientProvider>,
